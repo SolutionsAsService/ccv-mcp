@@ -11,6 +11,7 @@ import { AudioSource, AudioFrame, AudioStream, LocalAudioTrack, Room, RoomEvent,
 import { loadStt, transcribePcm16k } from './stt.mjs';
 import { loadParadee, synthesizeStream, SAMPLE_RATE as TTS_RATE } from './tts.mjs';
 import { modelDir } from './install.mjs';
+import { safeIdentity, utteranceLogLine } from './policy.mjs';
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'stack', 'web');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
@@ -29,6 +30,7 @@ const MIN_SPEECH_FRAMES = Number(process.env.MIN_SPEECH_MS ?? 250) / CAPTURE_FRA
 const END_SILENCE_FRAMES = Number(process.env.END_SILENCE_MS ?? 800) / CAPTURE_FRAME_MS;
 const PRE_ROLL_FRAMES = 20;
 const ECHO_TAIL_MS = 800;
+const SPEAK_BODY_MAX = 64 * 1024;
 
 // Windowed-sinc low-pass (7.2 kHz cutoff at 48 kHz, Hann window, 96 taps) so energy above 8 kHz
 // cannot fold into the speech band when decimating by 3.
@@ -130,7 +132,7 @@ export async function startVoiceHost({ home, livekit, port, onHeard, log = conso
     try {
       const heard = (await transcribeQueued(pcm)).trim();
       if (!heard) return;
-      log(`[${identity}] heard: ${heard}`);
+      log(utteranceLogLine(heard, total, STT_RATE));
       onHeard?.(heard, identity);
     } catch (err) {
       log(`utterance failed: ${err.message}`);
@@ -157,7 +159,7 @@ export async function startVoiceHost({ home, livekit, port, onHeard, log = conso
         }
         bargeCount = 0;
         interruptPlayback();
-        log(`[${identity}] barge-in: playback interrupted`);
+        log('barge-in: playback interrupted');
       }
       if (utter) {
         utter.push(pcm16k);
@@ -195,7 +197,7 @@ export async function startVoiceHost({ home, livekit, port, onHeard, log = conso
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/token') {
-      const identity = url.searchParams.get('identity') ?? 'browser';
+      const identity = safeIdentity(url.searchParams.get('identity'));
       const browser = new AccessToken(livekit.key, livekit.secret, { identity });
       browser.addGrant({ roomJoin: true, room: livekit.room, canPublish: true, canSubscribe: true });
       res.setHeader('content-type', 'application/json');
@@ -204,7 +206,10 @@ export async function startVoiceHost({ home, livekit, port, onHeard, log = conso
     if (req.method === 'GET' && url.pathname === '/health') return res.end('ok');
     if (req.method === 'POST' && url.pathname === '/speak') {
       let body = '';
-      for await (const chunk of req) body += chunk;
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > SPEAK_BODY_MAX) { res.statusCode = 413; return res.end('{"error":"body too large"}'); }
+      }
       try {
         const { text } = JSON.parse(body || '{}');
         if (!text) { res.statusCode = 400; return res.end('{"error":"text required"}'); }

@@ -1,6 +1,6 @@
 {
   "name": "ccv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Voice stack MCP server: LiveKit room, speech-to-text and text-to-speech, run with npx",
   "type": "module",
   "bin": {
@@ -13,7 +13,8 @@
     "README.md"
   ],
   "scripts": {
-    "start": "node bin/ccv.mjs"
+    "start": "node bin/ccv.mjs",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "license": "MIT",
   "repository": {

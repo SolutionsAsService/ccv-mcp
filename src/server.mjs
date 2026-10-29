@@ -2,7 +2,7 @@
 //   voice_setup   install LiveKit and download models in the background (returns at once)
 //   voice_start   wait for setup, start LiveKit (unless LIVEKIT_URL is set) and the voice host
 //   voice_stop    stop the host and the LiveKit server this process started
-//   voice_status  setup progress, host state, recent log lines
+//   voice_status  setup progress, host state, recent log lines (never spoken words)
 //   voice_speak   say text in the room (streams per sentence)
 //   voice_heard   recent utterances the host transcribed
 import { mkdirSync, appendFileSync, existsSync, readdirSync, statSync } from 'node:fs';
@@ -15,6 +15,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { loadDotEnv } from './env.mjs';
+import { livekitConfig } from './policy.mjs';
 const HEARD_KEEP = 50;
 const LOG_KEEP = 200;
 const LIVEKIT_PORT = 7880;
@@ -175,15 +176,8 @@ function speakVia(child, pending, nextId, spoken) {
 async function start() {
   if (state.host) return `already running at ${state.host.url}`;
   await ensureSetup();
-  const external = process.env.LIVEKIT_URL;
-  const livekit = {
-    url: external ?? `ws://127.0.0.1:${LIVEKIT_PORT}`,
-    key: process.env.LIVEKIT_API_KEY ?? 'devkey',
-    secret: process.env.LIVEKIT_API_SECRET ?? 'secret',
-    room: process.env.LK_ROOM ?? 'lk-voice',
-    identity: process.env.LK_IDENTITY ?? 'voice-host',
-  };
-  if (!external) {
+  const livekit = livekitConfig(process.env, LIVEKIT_PORT);
+  if (!livekit.external) {
     if (await portOpen(LIVEKIT_PORT)) {
       throw new Error(`port ${LIVEKIT_PORT} is already in use; stop that server or set LIVEKIT_URL to use it`);
     }
@@ -229,7 +223,7 @@ export async function main() {
   if (loaded.length) log(`loaded from .env: ${loaded.join(', ')}`);
   ensureSetup().catch(() => {});
 
-  const server = new McpServer({ name: 'ccv', version: '0.1.0' });
+  const server = new McpServer({ name: 'ccv', version: '0.2.0' });
 
   server.registerTool('voice_setup', {
     description: 'Install LiveKit and download the speech models in the background. Runs automatically at launch; use this only to retry after an error.',
@@ -250,7 +244,7 @@ export async function main() {
   }, async () => text(await stop()));
 
   server.registerTool('voice_status', {
-    description: 'Setup progress, host and LiveKit state, and recent log lines.',
+    description: 'Setup progress, host and LiveKit state, and recent log lines. Logs carry sizes and states, never spoken words; use voice_heard for those.',
     inputSchema: {},
   }, async () => text(status()));
 

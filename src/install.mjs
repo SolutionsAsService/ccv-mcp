@@ -7,18 +7,31 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmS
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import { offline } from './policy.mjs';
 
 export const LIVEKIT_VERSION = '1.13.11';
 const LIVEKIT_BASE = `https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}`;
 
-const MODEL_FILES = [
-  { repo: 'velddev/Underdog-Bark-3.0-Clean-sherpa-onnx', file: 'encoder.int8.onnx', dir: 'stt',
+// Each model is pinned to a repository commit, and every file to its SHA-256, so a changed upload
+// on Hugging Face cannot change what runs.
+const STT_REPO = 'velddev/Underdog-Bark-3.0-Clean-sherpa-onnx';
+const STT_REV = 'bdcbdca05592e01e075a7a0179fe57ef0ccb50d5';
+const TTS_REPO = 'sahilmahendrakar/Paradee-8M-v1.1';
+const TTS_REV = '330617ad1f097b4f6b02c103e54b39006c090b45';
+
+export const MODEL_FILES = [
+  { repo: STT_REPO, rev: STT_REV, file: 'encoder.int8.onnx', dir: 'stt',
     sha256: 'dd8b0275d775ea664f0306764f80a6d9b357ed7d7a1fc15e8269b08b14e89c47' },
-  { repo: 'velddev/Underdog-Bark-3.0-Clean-sherpa-onnx', file: 'decoder.int8.onnx', dir: 'stt' },
-  { repo: 'velddev/Underdog-Bark-3.0-Clean-sherpa-onnx', file: 'joiner.int8.onnx', dir: 'stt' },
-  { repo: 'velddev/Underdog-Bark-3.0-Clean-sherpa-onnx', file: 'tokens.txt', dir: 'stt' },
-  { repo: 'sahilmahendrakar/Paradee-8M-v1.1', file: 'onnx/paradee_int8.onnx', as: 'paradee_int8.onnx', dir: 'tts' },
-  { repo: 'sahilmahendrakar/Paradee-8M-v1.1', file: 'config.json', dir: 'tts' },
+  { repo: STT_REPO, rev: STT_REV, file: 'decoder.int8.onnx', dir: 'stt',
+    sha256: '8fb0c48ed66cbc43855912e2e1b75c50037e9d8d628eef11bcb5712b7eab7681' },
+  { repo: STT_REPO, rev: STT_REV, file: 'joiner.int8.onnx', dir: 'stt',
+    sha256: '2d9a8a895f38a2e132c5c4edf9de4af638c121664329f7a86c473190700c6378' },
+  { repo: STT_REPO, rev: STT_REV, file: 'tokens.txt', dir: 'stt',
+    sha256: 'd58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d' },
+  { repo: TTS_REPO, rev: TTS_REV, file: 'onnx/paradee_int8.onnx', as: 'paradee_int8.onnx', dir: 'tts',
+    sha256: '665c3cce6d9872e24bd43db4aa19d3b9c224cdeb6d79b0814190e1c2e43defbc' },
+  { repo: TTS_REPO, rev: TTS_REV, file: 'config.json', dir: 'tts',
+    sha256: 'c3f420e8a5aea41b97f698404a1b1e28e403c662f65927345335fc5493f2e075' },
 ];
 
 export function platformKey() {
@@ -69,6 +82,7 @@ function run(cmd, args, log) {
 export async function ensureLiveKit(home, log) {
   const bin = livekitBinary(home);
   if (existsSync(bin)) return { cmd: bin, docker: false };
+  if (offline(process.env)) throw new Error(`CCV_OFFLINE is set and LiveKit is not staged at ${bin}`);
 
   if (process.platform === 'darwin') {
     log('macOS: installing livekit with Homebrew');
@@ -109,10 +123,11 @@ export async function ensureModels(home, log) {
     const dir = path.join(home, 'models', m.dir);
     const dest = path.join(dir, m.as ?? path.basename(m.file));
     if (existsSync(dest)) continue;
+    if (offline(process.env)) throw new Error(`CCV_OFFLINE is set and ${m.dir}/${path.basename(dest)} is not staged in ${home}`);
     mkdirSync(dir, { recursive: true });
     log(`downloading ${m.repo}/${m.file}`);
-    await download(`https://huggingface.co/${m.repo}/resolve/main/${m.file}`, dest, headers);
-    if (m.sha256 && sha256(dest) !== m.sha256) {
+    await download(`https://huggingface.co/${m.repo}/resolve/${m.rev}/${m.file}`, dest, headers);
+    if (sha256(dest) !== m.sha256) {
       rmSync(dest, { force: true });
       throw new Error(`checksum mismatch for ${m.file}`);
     }
